@@ -1,7 +1,8 @@
 from tensorflow.keras import backend as K
 from tensorflow.keras.layers import Convolution2D, MaxPooling2D, Flatten, \
-    Dropout, BatchNormalization, LeakyReLU, InputLayer, Dense
-import keras.layers as kl
+    Dropout, BatchNormalization, LeakyReLU, InputLayer, Dense, Conv2D
+from tensorflow.keras.layers import Conv2D, MaxPool2D, Dense, LeakyReLU, SeparableConv2D, ReLU
+import tensorflow.keras.layers as kl
 
 from .nodes.cnn import *
 from .nodes.language import CHeaderNode, CFooterNode
@@ -82,17 +83,18 @@ class NNCG:
         # Read the Keras model layer by layer and add it to the graph
 
         for i, layer in enumerate(model.layers):
-            if type(layer) == Convolution2D or type(layer) == kl.convolutional.Conv2D:
+            #if type(layer) == Convolution2D or type(layer) == Conv2D:
+            if 'Conv2D' in str(type(layer)):
                 cur_node = self.add_conv2d(layer, cur_node)
-            elif type(layer) == MaxPooling2D or type(layer) == kl.pooling.MaxPooling2D:
+            elif type(layer) == MaxPooling2D or type(layer) == MaxPool2D or 'MaxPooling2D' in str(type(layer)):
                 cur_node = self.add_maxpool2d(layer, cur_node)
             elif type(layer) == LeakyReLU:
                 pass  # fixme
-            elif type(layer) == Dense or type(layer) == kl.core.Dense:
+            elif type(layer) == Dense or 'Dense' in str(type(layer)):
                 cur_node = self.add_dense(layer, cur_node)
-            elif type(layer) == Flatten or type(layer) == kl.core.Flatten:
+            elif type(layer) == Flatten:
                 cur_node = self.add_flatten(cur_node)
-            elif type(layer) == Dropout or type(layer) == kl.Dropout:
+            elif type(layer) == Dropout:
                 pass
             elif type(layer) == InputLayer:
                 pass
@@ -371,7 +373,7 @@ class NNCG:
         :return: The NNCG SoftmaxNode.
         """
         return SoftmaxNode(prev_node)
-        
+    
     @staticmethod
     def add_sigmoid(prev_node) -> SigmoidNode:
         """
