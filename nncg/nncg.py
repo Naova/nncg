@@ -348,7 +348,8 @@ class NNCG:
         strides = layer.strides
         padding = layer.padding
         activation = layer.activation
-        cur_node = SeparableConv2DNode(w1, w2, b, strides, padding, prev_node)
+        cur_node = SeparableConv2D_Depthwise_Node(w1, np.zeros(b.shape, dtype='float32'), strides, padding, prev_node)
+        cur_node = SeparableConv2D_Pointwise_Node(w2, b, (1, 1), 'valid', cur_node)
         cur_node = self.add_activation(activation, cur_node)
         if self.testing != 0:
             cur_node = self.add_test_node(cur_node, layer)

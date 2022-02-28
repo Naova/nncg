@@ -156,24 +156,37 @@ class Conv2DNode(Node):
         self.b = (self.b / self.scale / x_scale).astype('int16')
         #self.out_var.type = 'int'
 
-class SeparableConv2DNode(Node):
+class SeparableConv2D_Depthwise_Node(Node):
     """
-    A SeparableConv2D node.
+    A Node representing a depthwise convolution. This is an abstract node to represent the meta
+    information given by the Keras Conv2D. It is thus in HWC format. It must be lowered to be writeable
+    as C code but should not be removed from graph to provide the meta information.
     """
+    quantized = False
+    in_var: Variable
+    out_var: Variable
+    access_pattern: List[int]
 
-    def __init__(self, w1: np.ndarray, w2:np.ndarray, b: np.ndarray, stride: tuple, padding: str, prev_node):
+    def __init__(self, w: np.ndarray, b: np.ndarray, stride: tuple, padding: str, prev_node):
+        """
+        Initialize the SeparableConv2D_Depthwise_Node.
+        :param w: Weights. Shape must be: kernel height, kernel width, channels in, channels out (number of filter)
+                  as NumPy ndarray. Thus the weight from a Keras Conv2D can be passed without prior conversion.
+        :param b: Bias. NumPy ndarray with length "channels out"
+        :param stride: Tuple of 2.
+        :param padding: Like in TensorFlow 'same' or 'valid'
+        :param prev_node: The previous node.
+        """
         self.in_var = prev_node.out_var
         x = self.in_var
-        assert self.in_var.dim[2] == w1.shape[2]
         super().__init__(prev_node)
         self.in_dim = prev_node.out_dim
-        self.w1 = w1
-        self.w2 = w2
+        self.w = w
         self.b = b
         self.stride = stride
         self.padding = padding
         self.H, self.W, self.C_IN = x.dim
-        self.KH, self.KW, _, self.C_OUT = w1.shape
+        self.KH, self.KW, _, self.C_OUT = w.shape
         self.SH, self.SW = stride
 
         if padding == 'valid':
@@ -194,7 +207,7 @@ class SeparableConv2DNode(Node):
         self.in_var.change_padding([[self.pad_top, self.pad_bottom],
                                     [self.pad_left, self.pad_right],
                                     [0, 0]])
-        self.out_dim = (H_OUT, W_OUT, self.C_OUT)
+        self.out_dim = (H_OUT, W_OUT, self.C_IN)
         self.out_var = Allocation.allocate_var('float', 'x', self.out_dim)
 
     def lowering(self):
@@ -231,8 +244,7 @@ class SeparableConv2DNode(Node):
             [0, self.out_dim[1] * self.SW, self.stride[1]],
             [0, self.KH, 1],
             [0, self.KW, 1],
-            [0, self.C_IN, 1],
-            [0, self.C_OUT, 1]
+            [0, self.C_IN, 1]
         ]
         conv_loops = LoopNode.create_loops_by_description(conv_loop_descr)
         h_loop = conv_loops[0]
@@ -240,11 +252,10 @@ class SeparableConv2DNode(Node):
         kh_loop = conv_loops[2]
         kw_loop = conv_loops[3]
         c_in_loop = conv_loops[4]
-        c_out_loop = conv_loops[5]
 
         b_h_loop.add_edge('next', h_loop)
 
-        w_var = Allocation.allocate_var(self.w1.dtype, 'w', self.w1.shape, init_data=self.w1)
+        w_var = Allocation.allocate_var(self.w.dtype, 'w', self.w.shape, init_data=self.w)
         out_var_idx = IndexedVariable(self.out_var)
         in_var_idx = IndexedVariable(self.in_var, False)
         w_var_idx = IndexedVariable(w_var, False)
@@ -263,10 +274,113 @@ class SeparableConv2DNode(Node):
         exp4 = Expression('{var1} + {var2}',
                           var1=w_loop.get_node('var'),
                           var2=kw_loop.get_node('var'))
-        out_var_idx.set_indices([exp1, exp2, c_out_loop.get_node('var')])
+        out_var_idx.set_indices([exp1, exp2, c_in_loop.get_node('var')])
         in_var_idx.set_indices([exp3, exp4, c_in_loop.get_node('var')])
         w_var_idx.set_indices(
-            [kh_loop.get_node('var'), kw_loop.get_node('var'), c_in_loop.get_node('var'), c_out_loop.get_node('var')])
+            [kh_loop.get_node('var'), kw_loop.get_node('var'), c_in_loop.get_node('var'), Constant(0)]
+        )
+        mac_node = MACNode(out_var_idx, w_var_idx, in_var_idx)
+        c_in_loop.add_edge('content', mac_node)
+
+        # These variables must be declared (partially with initial data) at the beginning of the function
+        self.var_decls.append(self.out_var)
+        self.const_decls.append(w_var)
+        self.const_decls.append(b_var)
+
+        # Don't remove this node, just put everything as content to this node.
+        self.add_edge('content', b_h_loop)
+
+class SeparableConv2D_Pointwise_Node(Node):
+    """
+    A Node representing a pointwise convolution. This is an abstract node to represent the meta
+    information given by the Keras Conv2D. It is thus in HWC format. It must be lowered to be writeable
+    as C code but should not be removed from graph to provide the meta information.
+    """
+    quantized = False
+    in_var: Variable
+    out_var: Variable
+    access_pattern: List[int]
+
+    def __init__(self, w: np.ndarray, b: np.ndarray, stride: tuple, padding: str, prev_node):
+        """
+        Initialize the SeparableConv2D_Pointwise_Node.
+        :param w: Weights. Shape must be: kernel height, kernel width, channels in, channels out (number of filter)
+                  as NumPy ndarray. Thus the weight from a Keras Conv2D can be passed without prior conversion.
+        :param b: Bias. NumPy ndarray with length "channels out"
+        :param stride: Tuple of 2.
+        :param padding: Like in TensorFlow 'same' or 'valid'
+        :param prev_node: The previous node.
+        """
+        self.in_var = prev_node.out_var
+        x = self.in_var
+        super().__init__(prev_node)
+        self.in_dim = prev_node.out_dim
+        self.w = w
+        self.b = b
+        self.stride = stride
+        self.padding = padding
+        self.H, self.W, self.C_IN = x.dim
+        self.KH, self.KW, _, self.C_OUT = w.shape
+        self.SH, self.SW = stride
+
+        H_OUT = int(np.ceil((self.H - self.KH + 1) / self.SH))
+        W_OUT = int(np.ceil((self.W - self.KW + 1) / self.SW))
+        self.pad_top = self.pad_bottom = self.pad_left = self.pad_right = 0
+
+        self.in_var.change_padding([[self.pad_top, self.pad_bottom],
+                                    [self.pad_left, self.pad_right],
+                                    [0, 0]])
+        self.out_dim = (H_OUT, W_OUT, self.C_OUT)
+        self.out_var = Allocation.allocate_var('float', 'x', self.out_dim)
+
+    def lowering(self):
+
+        # Create loops for settings the bias.
+        b_var = Allocation.allocate_var(self.b.dtype, 'b', self.b.shape, init_data=self.b)
+        out_var_idx = IndexedVariable(self.out_var)
+        b_var_idx = IndexedVariable(b_var)
+
+        # Create the loops using a descriptor.
+        bias_loop_descr = [
+            [0, self.out_dim[0], 1],
+            [0, self.out_dim[1], 1],
+            [0, self.out_dim[2], 1]
+        ]
+        bias_loops = LoopNode.create_loops_by_description(bias_loop_descr)
+        b_h_loop = bias_loops[0]
+        b_w_loop = bias_loops[1]
+        b_c_loop = bias_loops[2]
+
+        set_bias = AssignmentNode(out_var_idx, b_var_idx)
+        b_c_loop.add_edge('content', set_bias)
+        out_var_idx.set_indices([b_h_loop.get_node('var'), b_w_loop.get_node('var'), b_c_loop.get_node('var')])
+        b_var_idx.set_indices([b_c_loop.get_node('var')])
+
+        # Create the loops for convolution, again with descriptors
+        conv_loop_descr = [
+            [0, self.out_dim[0] * self.SH, self.stride[0]],
+            [0, self.out_dim[1] * self.SW, self.stride[1]],
+            [0, self.C_IN, 1],
+            [0, self.C_OUT, 1]
+        ]
+        conv_loops = LoopNode.create_loops_by_description(conv_loop_descr)
+        h_loop = conv_loops[0]
+        w_loop = conv_loops[1]
+        c_in_loop = conv_loops[2]
+        c_out_loop = conv_loops[3]
+
+        b_h_loop.add_edge('next', h_loop)
+
+        w_var = Allocation.allocate_var(self.w.dtype, 'w', self.w.shape, init_data=self.w)
+        out_var_idx = IndexedVariable(self.out_var)
+        in_var_idx = IndexedVariable(self.in_var, False)
+        w_var_idx = IndexedVariable(w_var, False)
+
+        out_var_idx.set_indices([h_loop.get_node('var'), w_loop.get_node('var'), c_out_loop.get_node('var')])
+        w_var_idx.set_indices(
+            [Constant(0), Constant(0), c_in_loop.get_node('var'), c_out_loop.get_node('var')]
+        )
+        in_var_idx.set_indices([h_loop.get_node('var'), w_loop.get_node('var'), c_in_loop.get_node('var')])
         mac_node = MACNode(out_var_idx, w_var_idx, in_var_idx)
         c_out_loop.add_edge('content', mac_node)
 
@@ -278,6 +392,18 @@ class SeparableConv2DNode(Node):
         # Don't remove this node, just put everything as content to this node.
         self.add_edge('content', b_h_loop)
 
+    def quantize(self, x_scale):
+        """
+        Quantize this node.
+        :param x_scale: A factor previously determined by quantize_scale() for scaling the weights. Used for bias here.
+        :return: None.
+        """
+        min = np.min([np.min(self.w), np.min(self.b)])
+        max = np.max([np.max(self.w), np.max(self.b)])
+        self.scale = QuantizedNode.quantize_scale(min, max, 'int8')
+        self.w = (self.w / self.scale).astype('int8')
+        self.b = (self.b / self.scale / x_scale).astype('int16')
+        #self.out_var.type = 'int'
 
 class LeakyReLUNode(Node):
     """
