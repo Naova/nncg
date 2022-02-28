@@ -84,8 +84,10 @@ class NNCG:
 
         for i, layer in enumerate(model.layers):
             #if type(layer) == Convolution2D or type(layer) == Conv2D:
-            if 'Conv2D' in str(type(layer)):
+            if '.Conv2D' in str(type(layer)):
                 cur_node = self.add_conv2d(layer, cur_node)
+            elif 'SeparableConv2D' in str(type(layer)):
+                cur_node = self.add_separable_conv2d(layer, cur_node)
             elif type(layer) == MaxPooling2D or type(layer) == MaxPool2D or 'MaxPooling2D' in str(type(layer)):
                 cur_node = self.add_maxpool2d(layer, cur_node)
             elif type(layer) == LeakyReLU:
@@ -338,6 +340,20 @@ class NNCG:
         if self.testing != 0:
             cur_node = self.add_test_node(cur_node, layer)
         return cur_node
+
+    def add_separable_conv2d(self, layer, prev_node):
+        w1 = K.eval(layer.weights[0])
+        w2 = K.eval(layer.weights[1])
+        b = K.eval(layer.bias)
+        strides = layer.strides
+        padding = layer.padding
+        activation = layer.activation
+        cur_node = SeparableConv2DNode(w1, w2, b, strides, padding, prev_node)
+        cur_node = self.add_activation(activation, cur_node)
+        if self.testing != 0:
+            cur_node = self.add_test_node(cur_node, layer)
+        return cur_node
+
 
     def write_c(self, path):
         """
