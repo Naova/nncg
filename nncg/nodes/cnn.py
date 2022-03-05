@@ -439,7 +439,7 @@ class LeakyReLUNode(Node):
         if self.alpha == 0:
             false_exp = Constant(0)
         else:
-            false_exp = Expression('{alpha} * {t_var_idx}', t_var_idx=in_var_idx)
+            false_exp = Expression('{alpha} * {t_var_idx}', alpha=Constant(self.alpha), t_var_idx=in_var_idx)
         cond_node = ConditionalNode(out_var_idx, condition, false_exp, in_var_idx)
         loops[-1].add_edge('content', cond_node)
         self.var_decls.append(self.out_var)

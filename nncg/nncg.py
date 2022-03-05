@@ -91,7 +91,7 @@ class NNCG:
             elif type(layer) == MaxPooling2D or type(layer) == MaxPool2D or 'MaxPooling2D' in str(type(layer)):
                 cur_node = self.add_maxpool2d(layer, cur_node)
             elif type(layer) == LeakyReLU:
-                pass  # fixme
+                cur_node = self.add_leaky_relu(float(layer.alpha), cur_node)
             elif type(layer) == Dense or 'Dense' in str(type(layer)):
                 cur_node = self.add_dense(layer, cur_node)
             elif type(layer) == Flatten:
